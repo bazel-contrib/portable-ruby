@@ -1,5 +1,5 @@
 name: Release
-run-name: Release ${{ inputs.version }}
+run-name: Release ${{ inputs.version }}-${{ inputs.release_suffix || '1' }}
 
 on:
   workflow_dispatch:
@@ -13,10 +13,15 @@ on:
         required: false
         type: boolean
         default: false
+      release_suffix:
+        description: 'Release suffix for immutable tagging (e.g., 1 for 4.0.1-1)'
+        required: false
+        type: string
+        default: "1"
 
-# Prevent multiple releases of the same version from running simultaneously
+# Prevent multiple releases of the same version+suffix from running simultaneously
 concurrency:
-  group: release-${{ inputs.version }}
+  group: release-${{ inputs.version }}-${{ inputs.release_suffix || '1' }}
   cancel-in-progress: false
 
 env:
@@ -158,6 +163,7 @@ jobs:
       contents: write
     env:
       VERSION: ${{ inputs.version }}
+      SUFFIX: ${{ inputs.release_suffix || '1' }}
     steps:
       - uses: actions/checkout@main
 
@@ -194,7 +200,7 @@ jobs:
 
       - name: Create Release
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           RUBY_RELEASE_DATE: ${{ steps.ruby-release.outputs.date }}
           HAS_CHANGELOG: ${{ steps.ruby-release.outputs.has_changelog }}
         run: |
@@ -226,14 +232,7 @@ jobs:
             cat /tmp/ruby_changelog.md >> /tmp/release_notes.md
           fi
 
-          # Delete ALL existing releases matching this version (handles orphaned releases)
-          for release_id in $(gh api repos/${{ github.repository }}/releases --paginate --jq ".[] | select(.name == \"${VERSION}\" or .tag_name == \"${VERSION}\") | .id"); do
-            echo "Deleting release $release_id"
-            gh api -X DELETE "repos/${{ github.repository }}/releases/$release_id" || true
-          done
-          # Also delete the tag if it exists
-          gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/${VERSION}" 2>/dev/null || true
-          gh release create "${VERSION}" \
+          gh release create "${VERSION}-${SUFFIX}" \
             --draft \
             --notes-file /tmp/release_notes.md \
             --target "$(git rev-parse --verify HEAD)" \
@@ -262,6 +261,7 @@ jobs:
       attestations: write
     env:
       VERSION: ${{ inputs.version }}
+      SUFFIX: ${{ inputs.release_suffix || '1' }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -273,8 +273,8 @@ jobs:
       - name: Upload tarballs to GitHub Release
         working-directory: rubies
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
-        run: gh release upload "${VERSION}" *.tar.gz --clobber --repo "${{ github.repository }}"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: gh release upload "${VERSION}-${SUFFIX}" *.tar.gz --clobber --repo "${{ github.repository }}"
 
       - name: Download SLSA provenance
         uses: actions/download-artifact@v4
@@ -284,8 +284,8 @@ jobs:
 
       - name: Upload SLSA provenance to release
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
-        run: gh release upload "${VERSION}" provenance/*.intoto.jsonl --clobber --repo "${{ github.repository }}"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: gh release upload "${VERSION}-${SUFFIX}" provenance/*.intoto.jsonl --clobber --repo "${{ github.repository }}"
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
@@ -299,10 +299,11 @@ jobs:
       contents: write
     env:
       VERSION: ${{ inputs.version }}
+      SUFFIX: ${{ inputs.release_suffix || '1' }}
     steps:
       - name: Publish release
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           # Mark as prerelease if version contains preview or rc
           if echo "${VERSION}" | grep -qiE '(preview|rc)'; then
@@ -312,34 +313,7 @@ jobs:
           fi
 
           if [[ "${{ inputs.latest }}" == "true" ]]; then
-            gh release edit "${VERSION}" --draft=false --latest $prerelease_flag --repo "${{ github.repository }}"
+            gh release edit "${VERSION}-${SUFFIX}" --draft=false --latest $prerelease_flag --repo "${{ github.repository }}"
           else
-            gh release edit "${VERSION}" --draft=false --latest=false $prerelease_flag --repo "${{ github.repository }}"
+            gh release edit "${VERSION}-${SUFFIX}" --draft=false --latest=false $prerelease_flag --repo "${{ github.repository }}"
           fi
-
-  notify:
-    needs: [build, combine-hashes, create-release, provenance, upload-assets, publish-release]
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-      - name: Send email via Resend
-        env:
-          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          if [[ "${{ needs.publish-release.result }}" == "success" ]]; then
-            subject="✅ Ruby ${VERSION} released successfully"
-            body="<p>Ruby ${VERSION} has been released successfully.</p><p><a href='https://github.com/${{ github.repository }}/releases/tag/${VERSION}'>View Release</a></p>"
-          else
-            subject="❌ Ruby ${VERSION} release failed"
-            body="<p>Ruby ${VERSION} release failed.</p><p><a href='https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'>View Workflow Run</a></p>"
-          fi
-          curl -X POST 'https://api.resend.com/emails' \
-            -H "Authorization: Bearer ${RESEND_API_KEY}" \
-            -H 'Content-Type: application/json' \
-            -d "{
-              \"from\": \"Ruby Releases <ruby@mise.jdx.dev>\",
-              \"to\": [\"${{ secrets.NOTIFY_EMAIL }}\"],
-              \"subject\": \"${subject}\",
-              \"html\": \"${body}\"
-            }"
