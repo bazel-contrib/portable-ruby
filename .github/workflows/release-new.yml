@@ -8,6 +8,11 @@ on:
         required: false
         type: boolean
         default: false
+      version:
+        description: 'Only release this specific version (e.g. 4.0.1), leave empty for all'
+        required: false
+        type: string
+        default: ""
   schedule:
     # Run every 12 hours to pick up new versions
     - cron: "30 */12 * * *"
@@ -35,18 +40,23 @@ jobs:
           # Matches stable (X.Y.Z) and preview (X.Y.Z-preview1, X.Y.Z-rc1, etc.)
           formula_versions=$(ls Formula/jdx-ruby@*.rb | sed 's/Formula\/jdx-ruby@//; s/\.rb//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' || true)
 
+          # Filter to a specific version if provided
+          if [[ -n "${{ inputs.version }}" ]]; then
+            formula_versions=$(echo "$formula_versions" | grep -E "^${{ inputs.version }}$" || true)
+          fi
+
           if [[ "${{ inputs.replace_all }}" == "true" ]]; then
             # Release all versions
             versions_to_release="$formula_versions"
             echo "Replacing all releases"
           else
             # Get existing releases
-            existing_releases=$(gh release list --limit 100 --json tagName --jq '.[].tagName' || true)
+            existing_releases=$(gh release list --limit 500 --json tagName --jq '.[].tagName' || true)
 
-            # Find versions without releases
+            # Find versions without suffixed releases (e.g., X.Y.Z-1)
             versions_to_release=""
             for version in $formula_versions; do
-              if ! echo "$existing_releases" | grep -q "^${version}$"; then
+              if ! echo "$existing_releases" | grep -qE "^${version}-[0-9]+$"; then
                 versions_to_release="$versions_to_release $version"
               fi
             done
@@ -70,13 +80,24 @@ jobs:
         run: |
           versions='${{ steps.find-versions.outputs.versions }}'
           latest_stable='${{ steps.find-versions.outputs.latest_stable }}'
+
+          # Fetch all existing release tags once to compute suffixes
+          all_releases=$(gh release list --limit 500 --json tagName --jq '.[].tagName' || true)
+
           for version in $(echo "$versions" | jq -r '.[]'); do
+            # Find highest existing suffix for this version, increment by 1
+            max_suffix=$(echo "$all_releases" \
+              | grep -E "^${version}-[0-9]+$" \
+              | sed "s/^${version}-//" \
+              | sort -n | tail -1)
+            next_suffix=$((${max_suffix:-0} + 1))
+
             if [[ "$version" == "$latest_stable" ]]; then
-              echo "Triggering release for $version (latest)"
-              gh workflow run release.yml -f version="$version" -f latest=true
+              echo "Triggering release for $version suffix=$next_suffix (latest)"
+              gh workflow run release.yml -f version="$version" -f latest=true -f release_suffix="$next_suffix"
             else
-              echo "Triggering release for $version"
-              gh workflow run release.yml -f version="$version"
+              echo "Triggering release for $version suffix=$next_suffix"
+              gh workflow run release.yml -f version="$version" -f release_suffix="$next_suffix"
             fi
             # Small delay to avoid rate limiting
             sleep 5
