@@ -45,8 +45,27 @@ module PortableFormulaMixin
   end
 
   def test
-    refute_match(/Homebrew libraries/,
-                 shell_output("#{HOMEBREW_BREW_FILE} linkage #{full_name}"))
+    linkage_output = shell_output("#{HOMEBREW_BREW_FILE} linkage #{full_name}")
+    if OS.linux?
+      homebrew_libraries = []
+      in_homebrew_libraries = false
+      linkage_output.each_line do |line|
+        if line.chomp == "Homebrew libraries:"
+          in_homebrew_libraries = true
+          homebrew_libraries.clear
+          next
+        end
+        next unless in_homebrew_libraries
+        break unless line.start_with?("  ")
+
+        homebrew_libraries << line
+      end
+
+      unexpected_libraries = homebrew_libraries.reject { |line| line.match?(/\((?:gcc|glibc)\)\s*\z/) }
+      assert_empty unexpected_libraries, "Unexpected Homebrew linkage:\n#{unexpected_libraries.join}"
+    else
+      refute_match(/Homebrew libraries/, linkage_output)
+    end
 
     super
   end
@@ -85,22 +104,41 @@ module PortableFormulaMixin
         # Prefer the relocated portable Ruby prefix when building native gems.
         # This lets mkmf find headers, static libraries, and pkg-config files
         # copied into the package even when PKG_CONFIG_PATH is not set.
+        # mkmf reads MAKEFILE_CONFIG, while callers often inspect CONFIG.
         module RbConfig
           portable_prefix = File.expand_path("..", File.dirname(RbConfig.ruby))
           portable_include = File.join(portable_prefix, "include")
           portable_lib = File.join(portable_prefix, "lib")
           portable_pkgconfig = File.join(portable_lib, "pkgconfig")
+          portable_cppflags = "-include stdbool.h -I#{portable_include}"
 
-          CONFIG["CPPFLAGS"] = "-I#{portable_include} #{CONFIG["CPPFLAGS"]}"
-          CONFIG["LDFLAGS"] = "-L#{portable_lib} #{CONFIG["LDFLAGS"]}"
-          CONFIG["DLDFLAGS"] = "-L#{portable_lib} #{CONFIG["DLDFLAGS"]}"
-          CONFIG["PKG_CONFIG_PATH"] = [portable_pkgconfig, CONFIG["PKG_CONFIG_PATH"]]
+          [CONFIG, MAKEFILE_CONFIG].each do |config|
+            config["CPPFLAGS"] = "#{portable_cppflags} #{config["CPPFLAGS"]}"
+            config["LDFLAGS"] = "-L#{portable_lib} #{config["LDFLAGS"]}"
+            config["DLDFLAGS"] = "-L#{portable_lib} #{config["DLDFLAGS"]}"
+            config["PKG_CONFIG_PATH"] = [portable_pkgconfig, config["PKG_CONFIG_PATH"]]
+              .compact
+              .reject(&:empty?)
+              .join(File::PATH_SEPARATOR)
+          end
+          ENV["PKG_CONFIG_PATH"] = [portable_pkgconfig, ENV["PKG_CONFIG_PATH"]]
             .compact
             .reject(&:empty?)
             .join(File::PATH_SEPARATOR)
         end
       RUBY
     end
+  end
+
+  def install_default_native_gem(ruby, gem_name)
+    version = shell_output("#{ruby} -r#{gem_name} -e 'puts Gem.loaded_specs.fetch(#{gem_name.dump}).version'").chomp
+    system Pathname(ruby).dirname/"gem", "install", gem_name, "--version", version, "--force"
+  rescue
+    Dir[Pathname(ruby).dirname.parent/"lib/ruby/gems/*/extensions/**/#{gem_name}-#{version}/mkmf.log"].each do |log|
+      ohai log
+      puts File.read(log)
+    end
+    raise
   end
 end
 

@@ -191,10 +191,21 @@ class JdxRuby33 < Formula
     if OS.linux?
       # Don't restrict to a specific GCC compiler binary we used (e.g. gcc-5).
       inreplace lib/"ruby/#{abi_version}/#{abi_arch}/rbconfig.rb" do |s|
+        rbconfig = s.to_s
         s.gsub! ENV.cxx, "c++"
         s.gsub! ENV.cc, "cc"
+        s.gsub!(/(CONFIG\["CC"\] = )"gcc-\d+"/, '\\1"cc"') if rbconfig.match?(/CONFIG\["CC"\] = "gcc-\d+"/)
+        s.gsub!(/(CONFIG\["LDSHARED"\] = )"gcc-\d+/, '\\1"cc') if rbconfig.match?(/CONFIG\["LDSHARED"\] = "gcc-\d+/)
+        s.gsub!(/(CONFIG\["CXX"\] = )"g\+\+-\d+"/, '\\1"c++"') if rbconfig.match?(/CONFIG\["CXX"\] = "g\+\+-\d+"/)
         # Change e.g. `CONFIG["AR"] = "gcc-ar-11"` to `CONFIG["AR"] = "ar"`
         s.gsub!(/(CONFIG\[".+"\] = )"gcc-(.*)-\d+"/, '\\1"\\2"')
+        [
+          %r{ ?-I/home/linuxbrew/\.linuxbrew/opt/(?:glibc@[^ /]+|linux-headers@[^ /]+)/include},
+          %r{ ?-L/home/linuxbrew/\.linuxbrew/opt/glibc@[^ /]+/lib},
+          %r{ ?-B/home/linuxbrew/\.linuxbrew/opt/glibc@[^ /]+/lib},
+          %r{ ?-Wl,-rpath-link=/home/linuxbrew/\.linuxbrew/opt/glibc@[^ /]+/lib},
+          / -nostdinc/,
+        ].each { |pattern| s.gsub!(pattern, "") if pattern.match?(rbconfig) }
         # C++ compiler might have been disabled because we break it with glibc@* builds
         s.sub!(/(CONFIG\["CXX"\] = )"false"/, '\\1"c++"') if build.without? "yjit"
       end
@@ -282,8 +293,8 @@ class JdxRuby33 < Formula
     # Test gems that require portable dependency headers
     # These were failing before we included headers in the tarball
     # See: https://github.com/jdx/mise/discussions/7268#discussioncomment-15298593
-    system testpath/"bin/gem", "install", "openssl"  # requires openssl headers
-    system testpath/"bin/gem", "install", "psych"    # requires libyaml headers
+    install_default_native_gem ruby, "openssl"  # requires openssl headers
+    install_default_native_gem ruby, "psych"    # requires libyaml headers
 
     # Test that gem upgrades work for bundled gems with executables
     # This was failing due to shell polyglot format not being detected by RubyGems
