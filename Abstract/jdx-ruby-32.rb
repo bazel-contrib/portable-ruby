@@ -205,10 +205,14 @@ class JdxRuby32 < Formula
     if OS.linux?
       # Don't restrict to a specific GCC compiler binary we used (e.g. gcc-5).
       inreplace lib/"ruby/#{abi_version}/#{abi_arch}/rbconfig.rb" do |s|
-        s.gsub! ENV.cxx, "c++"
-        s.gsub! ENV.cc, "cc"
+        # Genericize the version-specific GCC toolchain binaries (e.g. `gcc-ar-16` ->
+        # `ar`) before replacing the bare compiler name. ENV.cc may be a plain `gcc`,
+        # and substituting `gcc` -> `cc` first would strip the `gcc-` prefix, leaving
+        # nothing for this pattern to match (failing the inreplace audit).
         # Change e.g. `CONFIG["AR"] = "gcc-ar-11"` to `CONFIG["AR"] = "ar"`
         s.gsub!(/(CONFIG\[".+"\] = )"gcc-(.*)-\d+"/, '\\1"\\2"')
+        s.gsub! ENV.cxx, "c++"
+        s.gsub! ENV.cc, "cc"
         # C++ compiler might have been disabled because we break it with glibc@* builds
         s.sub!(/(CONFIG\["CXX"\] = )"false"/, '\\1"c++"') if build.without? "yjit"
       end
