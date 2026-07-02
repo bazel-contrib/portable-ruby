@@ -187,8 +187,10 @@ class JdxRuby < Formula
         # `ar`) before replacing the bare compiler name. ENV.cc may be a plain `gcc`,
         # and substituting `gcc` -> `cc` first would strip the `gcc-` prefix, leaving
         # nothing for this pattern to match (failing the inreplace audit).
-        # Change e.g. `CONFIG["AR"] = "gcc-ar-11"` to `CONFIG["AR"] = "ar"`
-        s.gsub!(/(CONFIG\[".+"\] = )"gcc-(.*)-\d+"/, '\\1"\\2"')
+        # Change e.g. `CONFIG["AR"] = "gcc-ar-11"` or `"gcc-ar"` to `CONFIG["AR"] = "ar"`.
+        # Newer GCC toolchains record the tool unversioned (`gcc-ar`), so the version
+        # suffix is optional.
+        s.gsub!(/(CONFIG\[".+"\] = )"gcc-(.+?)(?:-\d+)?"/, '\\1"\\2"')
         s.gsub! ENV.cxx, "c++"
         s.gsub! ENV.cc, "cc"
         # C++ compiler might have been disabled because we break it with glibc@* builds
