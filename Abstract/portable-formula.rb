@@ -37,6 +37,18 @@ module PortableFormulaMixin
       ENV.delete "HOMEBREW_RPATH_PATHS"
       ENV.delete "HOMEBREW_DYNAMIC_LINKER"
 
+      # Bake the target system's standard dynamic loader into the binaries.
+      # Portable Ruby ships no glibc (glibc@2.17 is a build-only dep that gets
+      # autoremoved after install), so the ELF interpreter must point at the
+      # system loader rather than a brewed glibc path. Newer Homebrew toolchains
+      # otherwise bake in a Cellar loader that doesn't exist on target systems,
+      # making the resulting `ruby` fail to exec ("not found", exit 127).
+      system_linker = case Hardware::CPU.arch
+      when :arm64, :aarch64 then "/lib/ld-linux-aarch64.so.1"
+      else "/lib64/ld-linux-x86-64.so.2"
+      end
+      ENV.append "LDFLAGS", "-Wl,--dynamic-linker=#{system_linker}"
+
       # https://github.com/Homebrew/homebrew-portable-ruby/issues/118
       ENV.append_to_cflags "-fPIC"
     end
