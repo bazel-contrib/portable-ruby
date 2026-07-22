@@ -1,6 +1,12 @@
 name: Release New Versions
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - recipes/rubies.yml
+      - .github/workflows/release-new.yml
   workflow_dispatch:
     inputs:
       replace_all:
@@ -8,16 +14,9 @@ on:
         required: false
         type: boolean
         default: false
-      version:
-        description: 'Only release this specific version (e.g. 4.0.1), leave empty for all'
-        required: false
-        type: string
-        default: ""
   schedule:
-    # Run every 12 hours to pick up new versions
     - cron: "30 */12 * * *"
 
-# Prevent multiple release-new runs from overlapping
 concurrency:
   group: release-new
   cancel-in-progress: false
@@ -29,47 +28,36 @@ jobs:
   check-and-release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@main
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: .ruby-version
 
       - name: Find versions to release
         id: find-versions
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          # Get all formula versions (extract version from jdx-ruby@X.Y.Z.rb)
-          # Matches stable (X.Y.Z) and preview (X.Y.Z-preview1, X.Y.Z-rc1, etc.)
-          formula_versions=$(ls Formula/jdx-ruby@*.rb | sed 's/Formula\/jdx-ruby@//; s/\.rb//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' || true)
-
-          # Filter to a specific version if provided
-          if [[ -n "${{ inputs.version }}" ]]; then
-            formula_versions=$(echo "$formula_versions" | grep -E "^${{ inputs.version }}$" || true)
-          fi
+          recipe_versions=$(ruby -ryaml -e 'puts YAML.load_file("recipes/rubies.yml").fetch("rubies").keys')
 
           if [[ "${{ inputs.replace_all }}" == "true" ]]; then
-            # Release all versions
-            versions_to_release="$formula_versions"
+            versions_to_release="$recipe_versions"
             echo "Replacing all releases"
           else
-            # Get existing releases
-            existing_releases=$(gh release list --limit 500 --json tagName --jq '.[].tagName' || true)
-
-            # Find versions without suffixed releases (e.g., X.Y.Z-1)
+            existing_releases=$(gh release list --limit 100 --json tagName --jq '.[].tagName' || true)
             versions_to_release=""
-            for version in $formula_versions; do
-              if ! echo "$existing_releases" | grep -qE "^${version}-[0-9]+$"; then
+            for version in $recipe_versions; do
+              if ! echo "$existing_releases" | grep -q "^${version}$"; then
                 versions_to_release="$versions_to_release $version"
               fi
             done
             echo "Found versions without releases: $versions_to_release"
           fi
 
-          # Output as JSON array
           versions_json=$(echo $versions_to_release | tr ' ' '\n' | grep -v '^$' | jq -R . | jq -s -c .)
           echo "versions=$versions_json" >> "$GITHUB_OUTPUT"
 
-          # Determine latest stable version (highest non-preview version)
-          all_versions=$(ls Formula/jdx-ruby@*.rb | sed 's/Formula\/jdx-ruby@//; s/\.rb//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' || true)
-          latest_stable=$(echo "$all_versions" | sort -V | tail -1)
+          latest_stable=$(ruby -ryaml -e 'puts YAML.load_file("recipes/rubies.yml").fetch("rubies").keys.grep(/\A\d+\.\d+\.\d+\z/).sort_by { |v| v.split(".").map(&:to_i) }.last')
           echo "latest_stable=$latest_stable" >> "$GITHUB_OUTPUT"
           echo "Latest stable version: $latest_stable"
 
@@ -80,25 +68,13 @@ jobs:
         run: |
           versions='${{ steps.find-versions.outputs.versions }}'
           latest_stable='${{ steps.find-versions.outputs.latest_stable }}'
-
-          # Fetch all existing release tags once to compute suffixes
-          all_releases=$(gh release list --limit 500 --json tagName --jq '.[].tagName' || true)
-
           for version in $(echo "$versions" | jq -r '.[]'); do
-            # Find highest existing suffix for this version, increment by 1
-            max_suffix=$(echo "$all_releases" \
-              | grep -E "^${version}-[0-9]+$" \
-              | sed "s/^${version}-//" \
-              | sort -n | tail -1)
-            next_suffix=$((${max_suffix:-0} + 1))
-
             if [[ "$version" == "$latest_stable" ]]; then
-              echo "Triggering release for $version suffix=$next_suffix (latest)"
-              gh workflow run release.yml -f version="$version" -f latest=true -f release_suffix="$next_suffix"
+              echo "Triggering release for $version (latest)"
+              gh workflow run release.yml -f version="$version" -f latest=true
             else
-              echo "Triggering release for $version suffix=$next_suffix"
-              gh workflow run release.yml -f version="$version" -f release_suffix="$next_suffix"
+              echo "Triggering release for $version"
+              gh workflow run release.yml -f version="$version"
             fi
-            # Small delay to avoid rate limiting
             sleep 5
           done

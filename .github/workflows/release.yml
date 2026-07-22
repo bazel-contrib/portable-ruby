@@ -1,5 +1,5 @@
 name: Release
-run-name: Release ${{ inputs.version }}-${{ inputs.release_suffix || '1' }}
+run-name: Release ${{ inputs.version }}
 
 on:
   workflow_dispatch:
@@ -13,20 +13,11 @@ on:
         required: false
         type: boolean
         default: false
-      release_suffix:
-        description: 'Release suffix for immutable tagging (e.g., 1 for 4.0.1-1)'
-        required: false
-        type: string
-        default: "1"
 
-# Prevent multiple releases of the same version+suffix from running simultaneously
+# Prevent multiple releases of the same version from running simultaneously
 concurrency:
-  group: release-${{ inputs.version }}-${{ inputs.release_suffix || '1' }}
+  group: release-${{ inputs.version }}
   cancel-in-progress: false
-
-env:
-  HOMEBREW_DEVELOPER: 1
-  HOMEBREW_NO_AUTO_UPDATE: 1
 
 permissions:
   contents: read
@@ -36,104 +27,9 @@ permissions:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            yjit: true
-          - runner: macos-15-intel
-            yjit: true
-          - runner: ubuntu-22.04
-            yjit: true
-          - runner: ubuntu-22.04-arm
-            yjit: true
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@main
-
-      # Disabled: Code signing causes issues with native gems compiled locally
-      # See: https://github.com/jdx/mise/discussions/7268
-      # - name: Import codesign certs
-      #   if: runner.os == 'macOS'
-      #   uses: apple-actions/import-codesign-certs@63fff01cd422d4b7b855d40ca1e9d34d2de9427d # v3
-      #   with:
-      #     p12-file-base64: ${{ secrets.CERTIFICATES_P12 }}
-      #     p12-password: ${{ secrets.CERTIFICATES_P12_PASS }}
-
-      - uses: ruby/setup-ruby@v1
-        id: setup-ruby
-        with:
-          ruby-version: ruby
-
-      - name: Install Homebrew
-        run: |
-          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-          echo "/home/linuxbrew/.linuxbrew/bin" >> $GITHUB_PATH
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-
-      - name: Tap repo
-        run: bin/setup
-
-      - name: Fix Bundler permissions (ARM Linux)
-        if: runner.os == 'Linux' && runner.arch == 'ARM64'
-        run: chmod -R go-w /home/linuxbrew/.linuxbrew/Homebrew/Library/Homebrew/vendor/bundle || true
-
-      - name: Build jdx Ruby
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 30
-          max_attempts: 3
-          retry_wait_seconds: 30
-          command: |
-            if [[ -n "${{ steps.setup-ruby.outputs.ruby-prefix }}" ]]; then
-              export HOMEBREW_BASERUBY="${{ steps.setup-ruby.outputs.ruby-prefix }}/bin/ruby"
-            fi
-            YJIT_FLAG=""
-            if [[ "${{ matrix.yjit }}" == "false" ]]; then
-              YJIT_FLAG="--without-yjit"
-            fi
-            mkdir -p rubies/
-            cd rubies
-            brew jdx-package --verbose $YJIT_FLAG jdx-ruby@${{ inputs.version }}
-
-      # Disabled: Code signing causes issues with native gems compiled locally
-      # See: https://github.com/jdx/mise/discussions/7268
-      # - name: Codesign macOS binaries
-      #   if: runner.os == 'macOS'
-      #   working-directory: rubies
-      #   run: |
-      #     tarball=$(ls *.tar.gz)
-      #     echo "Signing binaries in $tarball"
-      #
-      #     # Extract
-      #     mkdir -p extracted
-      #     tar -xzf "$tarball" -C extracted
-      #
-      #     # Sign Mach-O executables and bundles (skip .dSYM, .o, .a files)
-      #     find extracted -type f \( -name "*.bundle" -o -name "*.dylib" -o -perm +111 \) \
-      #       -not -path "*.dSYM/*" \
-      #       -not -name "*.o" \
-      #       -not -name "*.a" | while read -r file; do
-      #       if file "$file" | grep -q "Mach-O"; then
-      #         echo "Signing $file"
-      #         codesign --sign "Developer ID Application: Jeffrey Dickey (4993Y37DX6)" \
-      #           --identifier "dev.jdx.ruby" \
-      #           --options runtime \
-      #           --force \
-      #           "$file"
-      #       fi
-      #     done
-      #
-      #     # Re-create tarball
-      #     rm "$tarball"
-      #     tar -czf "$tarball" -C extracted .
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ruby-${{ inputs.version }}-${{ matrix.runner }}-yjit-${{ matrix.yjit }}
-          path: rubies/
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ inputs.version }}
 
   combine-hashes:
     needs: build
@@ -142,7 +38,7 @@ jobs:
       hashes: ${{ steps.combine.outputs.hashes }}
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: ruby-${{ inputs.version }}-*
           path: rubies
@@ -157,13 +53,34 @@ jobs:
   create-release:
     needs: build
     runs-on: ubuntu-latest
+    outputs:
+      revision_tag: ${{ steps.revision.outputs.tag }}
     permissions:
       contents: write
     env:
       VERSION: ${{ inputs.version }}
-      SUFFIX: ${{ inputs.release_suffix || '1' }}
     steps:
-      - uses: actions/checkout@main
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Determine build revision
+        id: revision
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # Find existing revision tags (e.g., 3.4.5-1, 3.4.5-2, ...)
+          # Use git ls-remote to get all tags — not truncated like gh release list
+          last_revision=$(git ls-remote --tags origin "refs/tags/${VERSION}-*" | \
+            sed 's|.*refs/tags/||' | \
+            { grep -E "^${VERSION}-[0-9]+$" || true; } | \
+            sed "s/^${VERSION}-//" | \
+            sort -n | tail -1)
+          if [[ -z "$last_revision" ]]; then
+            revision=1
+          else
+            revision=$((last_revision + 1))
+          fi
+          echo "tag=${VERSION}-${revision}" >> "$GITHUB_OUTPUT"
+          echo "Build revision: ${VERSION}-${revision}"
 
       - name: Get Ruby release info
         id: ruby-release
@@ -196,11 +113,12 @@ jobs:
             echo "has_changelog=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create Release
+      - name: Create releases
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           RUBY_RELEASE_DATE: ${{ steps.ruby-release.outputs.date }}
           HAS_CHANGELOG: ${{ steps.ruby-release.outputs.has_changelog }}
+          REVISION_TAG: ${{ steps.revision.outputs.tag }}
         run: |
           if [[ "${{ inputs.latest }}" == "true" ]]; then
             latest_flag="--latest"
@@ -230,11 +148,16 @@ jobs:
             cat /tmp/ruby_changelog.md >> /tmp/release_notes.md
           fi
 
-          gh release create "${VERSION}-${SUFFIX}" \
+          TARGET="$(git rev-parse --verify HEAD)"
+
+          # Create pinned revision release (e.g., 3.4.5-1) — immutable snapshot
+          echo "" >> /tmp/release_notes.md
+          echo "**Build revision:** ${REVISION_TAG}" >> /tmp/release_notes.md
+          gh release create "${REVISION_TAG}" \
             --draft \
             --notes-file /tmp/release_notes.md \
-            --target "$(git rev-parse --verify HEAD)" \
-            --title "${VERSION}-${SUFFIX}" \
+            --target "$TARGET" \
+            --title "${REVISION_TAG}" \
             $latest_flag \
             $prerelease_flag
 
@@ -244,7 +167,10 @@ jobs:
       actions: read
       id-token: write
       contents: write
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    # Keep this pinned to a release tag, not a commit SHA.
+    # The SLSA workflow downloads its builder from a tag-based release when
+    # `compile-generator: false`, and raw SHA refs break that resolution.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: "${{ needs.combine-hashes.outputs.hashes }}"
       upload-assets: false
@@ -259,10 +185,9 @@ jobs:
       attestations: write
     env:
       VERSION: ${{ inputs.version }}
-      SUFFIX: ${{ inputs.release_suffix || '1' }}
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: ruby-${{ inputs.version }}-*
           path: rubies
@@ -271,37 +196,41 @@ jobs:
       - name: Upload tarballs to GitHub Release
         working-directory: rubies
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: gh release upload "${VERSION}-${SUFFIX}" *.tar.gz --clobber --repo "${{ github.repository }}"
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          REVISION_TAG: ${{ needs.create-release.outputs.revision_tag }}
+        run: |
+          gh release upload "${REVISION_TAG}" *.tar.gz --clobber --repo "${{ github.repository }}"
 
       - name: Download SLSA provenance
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: "ruby-${{ inputs.version }}.intoto.jsonl"
           path: provenance
 
       - name: Upload SLSA provenance to release
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: gh release upload "${VERSION}-${SUFFIX}" provenance/*.intoto.jsonl --clobber --repo "${{ github.repository }}"
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          REVISION_TAG: ${{ needs.create-release.outputs.revision_tag }}
+        run: |
+          gh release upload "${REVISION_TAG}" provenance/*.intoto.jsonl --clobber --repo "${{ github.repository }}"
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4
         with:
           subject-path: 'rubies/*.tar.gz'
 
   publish-release:
-    needs: [provenance, upload-assets]
+    needs: [create-release, provenance, upload-assets]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
       VERSION: ${{ inputs.version }}
-      SUFFIX: ${{ inputs.release_suffix || '1' }}
     steps:
       - name: Publish release
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          REVISION_TAG: ${{ needs.create-release.outputs.revision_tag }}
         run: |
           # Mark as prerelease if version contains preview or rc
           if echo "${VERSION}" | grep -qiE '(preview|rc)'; then
@@ -310,8 +239,37 @@ jobs:
             prerelease_flag=""
           fi
 
+          # Publish pinned revision release
           if [[ "${{ inputs.latest }}" == "true" ]]; then
-            gh release edit "${VERSION}-${SUFFIX}" --draft=false --latest $prerelease_flag --repo "${{ github.repository }}"
+            gh release edit "${REVISION_TAG}" --draft=false --latest $prerelease_flag --repo "${{ github.repository }}"
           else
-            gh release edit "${VERSION}-${SUFFIX}" --draft=false --latest=false $prerelease_flag --repo "${{ github.repository }}"
+            gh release edit "${REVISION_TAG}" --draft=false --latest=false $prerelease_flag --repo "${{ github.repository }}"
           fi
+
+  notify:
+    needs: [build, combine-hashes, create-release, provenance, upload-assets, publish-release]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Send email via Resend
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          REVISION_TAG="${{ needs.create-release.outputs.revision_tag }}"
+          if [[ "${{ needs.publish-release.result }}" == "success" ]]; then
+            subject="✅ Ruby ${VERSION} released successfully (${REVISION_TAG})"
+            body="<p>Ruby ${VERSION} has been released successfully (build ${REVISION_TAG}).</p><p><a href='https://github.com/${{ github.repository }}/releases/tag/${REVISION_TAG}'>View Release</a></p>"
+          else
+            subject="❌ Ruby ${VERSION} release failed"
+            body="<p>Ruby ${VERSION} release failed.</p><p><a href='https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'>View Workflow Run</a></p>"
+          fi
+          curl -X POST 'https://api.resend.com/emails' \
+            -H "Authorization: Bearer ${RESEND_API_KEY}" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"from\": \"Ruby Releases <ruby@en.dev>\",
+              \"to\": [\"${{ secrets.NOTIFY_EMAIL }}\"],
+              \"subject\": \"${subject}\",
+              \"html\": \"${body}\"
+            }"

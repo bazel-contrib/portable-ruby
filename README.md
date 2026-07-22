@@ -1,53 +1,54 @@
 # Portable Ruby Binaries
 
-Tools to build versions of Ruby that can be installed and run from anywhere on the filesystem.
+Tools to build Ruby tarballs that can be installed and run from anywhere on the filesystem.
 
-This is a fork of [jdx/ruby](https://github.com/jdx/ruby) with **immutable releases**: each Ruby version is published once at a stable, versioned tag (e.g. `4.0.1-1`) and never modified. This ensures downstream tools like [bazel-contrib/rules_ruby](https://github.com/bazel-contrib/rules_ruby) can pin checksums without breakage.
+This is a fork of [jdx/ruby](https://github.com/jdx/ruby) with **immutable releases** and **Intel macOS support**. Each Ruby version is published once at a stable, versioned tag (e.g. `4.0.1-1`) and never modified. This ensures downstream tools like [bazel-contrib/rules_ruby](https://github.com/bazel-contrib/rules_ruby) can pin checksums without breakage.
 
-## Releases
+## How do I use these rubies
 
-Releases are tagged as `X.Y.Z-1` (e.g. `4.0.1-1`). The tag is immutable — the binaries at that tag never change. If a rebuild is needed, a new tag is created (`4.0.1-2`, etc.).
+Download the appropriate tarball for your platform from the [releases page](https://github.com/bazel-contrib/portable-ruby/releases) and extract it to any location.
 
-Artifacts inside each release are named by Ruby version and platform:
+Release artifacts are named:
 
-| Platform | Artifact |
-|---|---|
-| macOS ARM64 | `ruby-X.Y.Z.arm64_darwin.tar.gz` |
-| macOS x86_64 | `ruby-X.Y.Z.x86_64_darwin.tar.gz` |
-| Linux x86_64 | `ruby-X.Y.Z.x86_64_linux.tar.gz` |
-| Linux ARM64 | `ruby-X.Y.Z.aarch64_linux.tar.gz` |
-
-Download from the [releases page](https://github.com/bazel-contrib/portable-ruby/releases) and extract to any location.
-
-## Release automation
-
-New Ruby versions are picked up automatically:
-
-1. **autobump** runs every 12 hours, creates a formula for any new Ruby release from [ruby/ruby](https://github.com/ruby/ruby)
-2. **release-new** runs every 12 hours, finds formulae without a release and triggers the build pipeline
-3. **release** builds on macOS (ARM64 + x86_64) and Linux (x86_64 + ARM64), then publishes an immutable release
-
-To manually trigger a release:
-
-```sh
-gh workflow run release-new.yml \
-  --repo bazel-contrib/portable-ruby \
-  -f version=4.0.1
-```
-
-To force a rebuild of an existing version:
-
-```sh
-gh workflow run release-new.yml \
-  --repo bazel-contrib/portable-ruby \
-  -f version=4.0.1 \
-  -f replace_all=true
-```
+- `ruby-VERSION.arm64_darwin.tar.gz`
+- `ruby-VERSION.x86_64_darwin.tar.gz`
+- `ruby-VERSION.x86_64_linux.tar.gz`
+- `ruby-VERSION.arm64_linux.tar.gz`
 
 ## Local development
 
-- Run `bin/setup` to tap your checkout of this repo as `jdx/ruby`.
-- Run e.g. `brew jdx-package --no-uninstall-deps --debug --verbose jdx-ruby@3.4.5` to build Ruby 3.4.5 locally with YJIT.
+Recipes are checked in under `recipes/`:
+
+- `recipes/rubies.yml`: Ruby source URLs, SHA256 values, series, and prerelease versions.
+- `recipes/dependencies.yml`: portable dependency source URLs and SHA256 values.
+- `recipes/series.yml`: per-series build settings.
+- `recipes/targets.yml`: release target metadata and pinned Linux containers.
+
+Validate recipes and build a tarball with:
+
+```sh
+bin/validate-recipes
+bin/package 3.4.9 --target macos --yjit --output rubies
+bin/package 3.4.9 --target x86_64_linux --no-yjit --output rubies
+```
+
+Linux release builds are expected to run in the pinned manylinux2014 containers from `recipes/targets.yml`. Builds need a baseruby of Ruby 3.0.0 or newer; set `JDX_RUBY_BASERUBY` when your shell default is older. Ruby 3.2 builds require `JDX_RUBY_BASERUBY` to match the exact version being built. YJIT builds use rustup/rustc from `PATH`, with optional `JDX_RUBY_RUSTUP_HOME`.
+
+## SSL certificates
+
+These Rubies use the first available certificate source in this order:
+
+| Priority | Source | Paths |
+| --- | --- | --- |
+| 1 | Standard OpenSSL overrides | `SSL_CERT_FILE`, `SSL_CERT_DIR` |
+| 2 | Portable Ruby overrides | `JDX_RUBY_SSL_CERT_FILE`, `JDX_RUBY_SSL_CERT_DIR` |
+| 3 | System bundles | `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/ca-bundle.pem`, `/etc/ssl/cert.pem` |
+| 4 | Bundled CA bundle | Last-resort fallback included with the portable build. |
+
+## How do I issue a new release
+
+[An automated release workflow is available to use](https://github.com/bazel-contrib/portable-ruby/actions/workflows/release.yml).
+Dispatch the workflow with a Ruby version and it will build, tag, upload SLSA provenance, and publish an immutable build revision release.
 
 ## Thanks
 

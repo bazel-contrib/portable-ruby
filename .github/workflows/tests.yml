@@ -17,25 +17,33 @@ jobs:
   syntax:
     runs-on: ubuntu-latest
     steps:
-      - name: Set up Homebrew
-        uses: Homebrew/actions/setup-homebrew@main
-      - run: brew test-bot --only-tap-syntax
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: .ruby-version
+      - name: Validate recipes
+        run: bin/validate-recipes
+      - name: Check Ruby syntax
+        run: |
+          ruby -c libexec/package.rb
+          ruby -c libexec/validate_recipes.rb
+          ruby -c libexec/update_ruby_recipe.rb
 
   build:
     needs: syntax
     if: github.event_name == 'pull_request'
     uses: ./.github/workflows/build.yml
     with:
-      formula: jdx-ruby@3.4.1
+      version: 3.4.1
 
-  # This job is used as a required status check
-  conclusion:
-    needs: build
+  final:
+    needs:
+      - syntax
+      - build
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && !cancelled()
+    timeout-minutes: 1
+    if: always()
     steps:
-      - name: Result
-        env:
-          RESULT: ${{ needs.build.result }}
-        run: |
-          [[ "${RESULT}" == success ]]
+      - name: Check CI job results
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
