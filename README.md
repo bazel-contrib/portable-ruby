@@ -2,17 +2,18 @@
 
 Tools to build Ruby tarballs that can be installed and run from anywhere on the filesystem.
 
+This is a fork of [jdx/ruby](https://github.com/jdx/ruby) with **immutable releases** and **Intel macOS support**. Each Ruby version is published once at a stable, versioned tag (e.g. `4.0.1-1`) and never modified. This ensures downstream tools like [bazel-contrib/rules_ruby](https://github.com/bazel-contrib/rules_ruby) can pin checksums without breakage.
+
 ## How do I use these rubies
 
-Download the appropriate tarball for your platform from the [releases page](https://github.com/jdx/ruby/releases) and extract it to any location.
+Download the appropriate tarball for your platform from the [releases page](https://github.com/bazel-contrib/portable-ruby/releases) and extract it to any location.
 
 Release artifacts are named:
 
-- `ruby-VERSION.macos.tar.gz`
+- `ruby-VERSION.arm64_darwin.tar.gz`
+- `ruby-VERSION.x86_64_darwin.tar.gz`
 - `ruby-VERSION.x86_64_linux.tar.gz`
-- `ruby-VERSION.x86_64_linux.no_yjit.tar.gz`
 - `ruby-VERSION.arm64_linux.tar.gz`
-- `ruby-VERSION.arm64_linux.no_yjit.tar.gz`
 
 ## Local development
 
@@ -46,12 +47,12 @@ These Rubies use the first available certificate source in this order:
 
 ## How do I issue a new release
 
-[An automated release workflow is available to use](https://github.com/jdx/ruby/actions/workflows/release.yml).
-Dispatch the workflow with a Ruby version and it will build, tag, upload SLSA provenance, and publish both the floating release and immutable build revision release.
+[An automated release workflow is available to use](https://github.com/bazel-contrib/portable-ruby/actions/workflows/release.yml).
+Dispatch the workflow with a Ruby version and it will build, tag, upload SLSA provenance, and publish an immutable build revision release.
 
 ## Thanks
 
-Forked from [spinel-coop/rv-ruby](https://github.com/spinel-coop/rv-ruby), which was based on [Homebrew/homebrew-portable-ruby](https://github.com/Homebrew/homebrew-portable-ruby).
+Forked from [jdx/ruby](https://github.com/jdx/ruby), which was forked from [spinel-coop/rv-ruby](https://github.com/spinel-coop/rv-ruby), originally based on [Homebrew/homebrew-portable-ruby](https://github.com/Homebrew/homebrew-portable-ruby).
 
 ## License
 

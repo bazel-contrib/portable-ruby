@@ -53,10 +53,9 @@ YJIT builds require `rustup` or `rustc` in `PATH`. Set `JDX_RUBY_RUSTUP_HOME` to
 
 ### Output Naming
 
-Release tarballs keep the existing names:
+Release tarballs use the fork's platform naming:
 
-- `ruby-VERSION.macos.tar.gz`
+- `ruby-VERSION.arm64_darwin.tar.gz`
+- `ruby-VERSION.x86_64_darwin.tar.gz`
 - `ruby-VERSION.x86_64_linux.tar.gz`
-- `ruby-VERSION.x86_64_linux.no_yjit.tar.gz`
 - `ruby-VERSION.arm64_linux.tar.gz`
-- `ruby-VERSION.arm64_linux.no_yjit.tar.gz`
