@@ -150,23 +150,6 @@ jobs:
 
           TARGET="$(git rev-parse --verify HEAD)"
 
-          # Delete ALL existing floating releases matching this version (handles orphaned releases)
-          for release_id in $(gh api repos/${{ github.repository }}/releases --paginate --jq ".[] | select(.name == \"${VERSION}\" or .tag_name == \"${VERSION}\") | .id"); do
-            echo "Deleting release $release_id"
-            gh api -X DELETE "repos/${{ github.repository }}/releases/$release_id" || true
-          done
-          # Also delete the tag if it exists
-          gh api -X DELETE "repos/${{ github.repository }}/git/refs/tags/${VERSION}" 2>/dev/null || true
-
-          # Create floating release (e.g., 3.4.5) — always updated to latest build
-          gh release create "${VERSION}" \
-            --draft \
-            --notes-file /tmp/release_notes.md \
-            --target "$TARGET" \
-            --title "${VERSION}" \
-            $latest_flag \
-            $prerelease_flag
-
           # Create pinned revision release (e.g., 3.4.5-1) — immutable snapshot
           echo "" >> /tmp/release_notes.md
           echo "**Build revision:** ${REVISION_TAG}" >> /tmp/release_notes.md
@@ -175,7 +158,7 @@ jobs:
             --notes-file /tmp/release_notes.md \
             --target "$TARGET" \
             --title "${REVISION_TAG}" \
-            --latest=false \
+            $latest_flag \
             $prerelease_flag
 
   provenance:
@@ -216,7 +199,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           REVISION_TAG: ${{ needs.create-release.outputs.revision_tag }}
         run: |
-          gh release upload "${VERSION}" *.tar.gz --clobber --repo "${{ github.repository }}"
           gh release upload "${REVISION_TAG}" *.tar.gz --clobber --repo "${{ github.repository }}"
 
       - name: Download SLSA provenance
@@ -230,7 +212,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
           REVISION_TAG: ${{ needs.create-release.outputs.revision_tag }}
         run: |
-          gh release upload "${VERSION}" provenance/*.intoto.jsonl --clobber --repo "${{ github.repository }}"
           gh release upload "${REVISION_TAG}" provenance/*.intoto.jsonl --clobber --repo "${{ github.repository }}"
 
       - name: Attest build provenance
@@ -258,15 +239,12 @@ jobs:
             prerelease_flag=""
           fi
 
-          # Publish floating release
-          if [[ "${{ inputs.latest }}" == "true" ]]; then
-            gh release edit "${VERSION}" --draft=false --latest $prerelease_flag --repo "${{ github.repository }}"
-          else
-            gh release edit "${VERSION}" --draft=false --latest=false $prerelease_flag --repo "${{ github.repository }}"
-          fi
-
           # Publish pinned revision release
-          gh release edit "${REVISION_TAG}" --draft=false --latest=false $prerelease_flag --repo "${{ github.repository }}"
+          if [[ "${{ inputs.latest }}" == "true" ]]; then
+            gh release edit "${REVISION_TAG}" --draft=false --latest $prerelease_flag --repo "${{ github.repository }}"
+          else
+            gh release edit "${REVISION_TAG}" --draft=false --latest=false $prerelease_flag --repo "${{ github.repository }}"
+          fi
 
   notify:
     needs: [build, combine-hashes, create-release, provenance, upload-assets, publish-release]
@@ -281,7 +259,7 @@ jobs:
           REVISION_TAG="${{ needs.create-release.outputs.revision_tag }}"
           if [[ "${{ needs.publish-release.result }}" == "success" ]]; then
             subject="✅ Ruby ${VERSION} released successfully (${REVISION_TAG})"
-            body="<p>Ruby ${VERSION} has been released successfully (build ${REVISION_TAG}).</p><p><a href='https://github.com/${{ github.repository }}/releases/tag/${VERSION}'>View Release</a> | <a href='https://github.com/${{ github.repository }}/releases/tag/${REVISION_TAG}'>View Revision</a></p>"
+            body="<p>Ruby ${VERSION} has been released successfully (build ${REVISION_TAG}).</p><p><a href='https://github.com/${{ github.repository }}/releases/tag/${REVISION_TAG}'>View Release</a></p>"
           else
             subject="❌ Ruby ${VERSION} release failed"
             body="<p>Ruby ${VERSION} release failed.</p><p><a href='https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'>View Workflow Run</a></p>"
