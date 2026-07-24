@@ -44,10 +44,16 @@ jobs:
             versions_to_release="$recipe_versions"
             echo "Replacing all releases"
           else
-            existing_releases=$(gh release list --limit 100 --json tagName --jq '.[].tagName' || true)
+            # Releases are tagged with immutable build revisions (e.g. 3.4.10-1),
+            # not the bare version (3.4.10). A version counts as released when any
+            # revision tag exists for it, otherwise the cron re-releases it forever.
+            # Use git ls-remote — gh release list truncates at its --limit.
+            existing_tags=$(git ls-remote --tags origin | \
+              sed 's|.*refs/tags/||; s|\^{}$||' | sort -u || true)
             versions_to_release=""
             for version in $recipe_versions; do
-              if ! echo "$existing_releases" | grep -q "^${version}$"; then
+              version_re=$(echo "$version" | sed 's/[.+]/\\&/g')
+              if ! echo "$existing_tags" | grep -qE "^${version_re}-[0-9]+$"; then
                 versions_to_release="$versions_to_release $version"
               fi
             done
